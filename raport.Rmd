@@ -3,28 +3,118 @@ title: "Raport - główne przyczyny stopniowego zmniejszania się długości śl
 author: "Roman Kaczorowski"
 date: "19 11 2016"
 output: html_document
+runtime: shiny
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+library(shiny)
+library(dplyr)
+library(ggplot2)
+
 ```
 
-## R Markdown
+```{r wczytywanie_danych, echo=FALSE, results='hide', warning=FALSE}
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+herring <- read.csv("sledzie.csv")
+herring$cfin1 <- as.numeric(as.character(herring$cfin1))
+herring$cfin2 <- as.numeric(as.character(herring$cfin2))
+herring$chel1 <- as.numeric(as.character(herring$chel1))
+herring$chel2 <- as.numeric(as.character(herring$chel2))
+herring$lcop1 <- as.numeric(as.character(herring$lcop1))
+herring$lcop2 <- as.numeric(as.character(herring$lcop2))
+herring$sst <- as.numeric(as.character(herring$sst))
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+herringSummary <- summary(herring)
+for(i in 1:ncol(herring)){
+  herring[is.na(herring[,i]), i] <- mean(herring[,i], na.rm = TRUE)
+}
 
-```{r cars}
-summary(cars)
+herringData <- tbl_df(herring)
 ```
 
-## Including Plots
+## Opis danych
 
-You can also embed plots, for example:
+| Dane  | Opis  | Dane  |
+|---------|-----------------------------|------------------------------------|
+| length  | długość złowionego śledzia  | cm  |
+| cfin1  |  dostępność planktonu |  zagęszczenie Calanus finmarchicus gat. 1 |
+| cfin2  |  dostępność planktonu |  zagęszczenie Calanus finmarchicus gat. 2 |
+| lcop1  | dostępność planktonu  | zagęszczenie Calanus helgolandicus gat. 1  |
+| lcop2  | dostępność planktonu  | zagęszczenie Calanus helgolandicus gat. 2  |
+| lcop1  | dostępność planktonu  | zagęszczenie widłonogów gat. 1  |
+| lcop2  | dostępność planktonu  | zagęszczenie widłonogów gat. 2  |
+| fbar  | natężenie połowów w regionie  | ułamek pozostawionego narybku  |
+| recr  |  roczny narybek  | liczba śledzi  |
+| cumf  | łączne roczne natężenie połowów w regionie  | ułamek pozostawionego narybku  |
+| totaln  |  łączna liczba ryb złowionych w ramach połowu  | liczba śledzi  |
+| sst  |  temperatura przy powierzchni wody |  °C |
+| sal  |  poziom zasolenia wody |  Knudsen ppt |
+| xmonth  | miesiąc połowu  | numer miesiąca  |
+| nao  |  oscylacja północnoatlantycka |  mb |
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+## Reprezentacja danych
+
+```{r rozklad_danych}
+
+knitr::kable(herringSummary)
+
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r przedstawienie_danych, echo=FALSE}
+# Define UI for application that draws a histogram
+ui <- pageWithSidebar(
+  headerPanel('Zmiana długośći śledzia'),
+  sidebarPanel(
+    selectInput('month', 'Miesiąc', c("Wszystkie" = "all", "styczen"="1", "luty" = "2", "marzec" = "3", "kwiecien" = "4", "maj" = "5", "czerwiec" = "6", "lipiec" = "7", "sierpien" = "8", "wrzesien" = "9", "październik" = "10", "listopad" = "11", "grudzien" = "12"))
+  ),
+  mainPanel(
+    plotOutput('plot1')
+  )
+)
+
+# Define server logic required to draw a histogram
+server <- function(input, output, session) {
+
+  # Combine the selected variables into a new data frame
+
+  selectedData <- reactive({
+    if(input$month == "all"){
+      herringData %>%
+      select(X, length)
+    }else{
+      herringData %>%
+      filter(xmonth == input$month) %>%
+      select(X, length)
+    }
+  })
+
+
+  output$plot1 <- renderPlot({
+   ggplot(selectedData(), aes(x = X, y=length)) + geom_point(alpha = 0.3) + geom_smooth(method="auto", se=TRUE, color="red")
+
+      })
+
+}
+
+# Run the application 
+shinyApp(ui = ui, server = server)
+
+```
+
+
+## Relacje między zmiennymi
+
+```{r korelacja}
+
+cor <- tbl_df(cor(herring)) %>%
+  mutate(name = colnames(herring), abs_length = abs(length)) %>%
+  select(name, abs_length, length) %>%
+  filter( name != 'length', name != 'X') %>%
+  arrange(desc(abs_length))
+
+knitr::kable(cor)
+
+```
+
