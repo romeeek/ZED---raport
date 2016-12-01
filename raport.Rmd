@@ -2,21 +2,46 @@
 title: "Raport - główne przyczyny stopniowego zmniejszania się długości śledzi"
 author: "Roman Kaczorowski"
 date: "19 11 2016"
-output: html_document
+output:
+  html_document:
+    number_sections: yes
+    toc: yes
+    toc_float: true
+    fig_width: 8
+    fig_height: 6
 runtime: shiny
 ---
 
-```{r setup, include=FALSE}
+
+#Streszczenie
+
+Analizie poddano zbiór danych dotyczący połowu śledzia oceanicznego. Dane zawierały ponad 50 tysięcy rekordów, które pochodziły z przestrzeni około 60 lat. Zgodnie z podanymi informacjami, traktowano *X* jako atrybut wskazujący na czas, pomimo braku jednostki i jego niespójności ze zmianami wartości atrybutu *xmonth*. Po wstępnym oczyszczeniu danych, wykorzystano algorytm uczenia maszynowego "random forest" i wykryto, że główną przyczyną tego zjawiska jest utrzymujący się wzrost temperatury przy powierzchni wody.
+
+#Inicjalizacja bibliotek potrzebnych do raportu.
+
+```{r setup, echo=TRUE, results='hide', warning=FALSE, message=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(shiny)
-library(dplyr)
-library(ggplot2)
+library('shiny')
+library('dplyr')
+library('ggplot2')
+library('caret')
+library('corrplot')
+library('reshape2')
+library('zoo')
+library('caret')
 
 ```
 
-```{r wczytywanie_danych, echo=FALSE, results='hide', warning=FALSE}
+# Dane
+
+## Wczytywanie danych.
+
+Dane są pobierane z pliku csv, przy pomocy funkcji read.csv(). Następnie cfin1, cfin2, chel1, chel2, lcop1 i lcop2 są zamieniane na atrybut numeryczny, ponieważ po wczytaniu zostały sklasyfikowane jako nominalny.
+
+```{r wczytywanie_danych, echo=TRUE, results='hide', warning=FALSE}
 
 herring <- read.csv("sledzie.csv")
+
 herring$cfin1 <- as.numeric(as.character(herring$cfin1))
 herring$cfin2 <- as.numeric(as.character(herring$cfin2))
 herring$chel1 <- as.numeric(as.character(herring$chel1))
@@ -25,23 +50,17 @@ herring$lcop1 <- as.numeric(as.character(herring$lcop1))
 herring$lcop2 <- as.numeric(as.character(herring$lcop2))
 herring$sst <- as.numeric(as.character(herring$sst))
 
-herringSummary <- summary(herring)
-for(i in 1:ncol(herring)){
-  herring[is.na(herring[,i]), i] <- mean(herring[,i], na.rm = TRUE)
-}
-
-herringData <- tbl_df(herring)
 ```
 
 ## Opis danych
 
-| Dane  | Opis  | Dane  |
+| Dane  | Opis  | Jednostka  |
 |---------|-----------------------------|------------------------------------|
 | length  | długość złowionego śledzia  | cm  |
 | cfin1  |  dostępność planktonu |  zagęszczenie Calanus finmarchicus gat. 1 |
 | cfin2  |  dostępność planktonu |  zagęszczenie Calanus finmarchicus gat. 2 |
-| lcop1  | dostępność planktonu  | zagęszczenie Calanus helgolandicus gat. 1  |
-| lcop2  | dostępność planktonu  | zagęszczenie Calanus helgolandicus gat. 2  |
+| lcheal1  | dostępność planktonu  | zagęszczenie Calanus helgolandicus gat. 1  |
+| lcheal2  | dostępność planktonu  | zagęszczenie Calanus helgolandicus gat. 2  |
 | lcop1  | dostępność planktonu  | zagęszczenie widłonogów gat. 1  |
 | lcop2  | dostępność planktonu  | zagęszczenie widłonogów gat. 2  |
 | fbar  | natężenie połowów w regionie  | ułamek pozostawionego narybku  |
@@ -55,17 +74,82 @@ herringData <- tbl_df(herring)
 
 ## Reprezentacja danych
 
-```{r rozklad_danych}
+```{r reprezentacja_danych, echo=FALSE, results=TRUE}
 
-knitr::kable(herringSummary)
+herringSummary <- summary(herring)
+herringRare <- tbl_df(herring)
+herringOrigin <- herring
+
+knitr::kable(herringSummary[,2:5])
+knitr::kable(herringSummary[,6:9])
+knitr::kable(herringSummary[,10:13])
+knitr::kable(herringSummary[,14:16])
 
 ```
 
+##Wartości puste
+
+Do usunięcia wartości pustych, użyto funkcji na.approx z pakietu 'Zoo'. Działa ona tak, że w miejsce wartości pustej wstawia wynik z interpolacji liniowej.Wartości dobierane są one odpowiednio dla każdej kolumny. Niestety funkcja ta nie może mieć na początku i na koncu wartości NA, dlatego tez te zostały zastąpione przez średnią z danej kolumny.
+
+```{r usuwanie_wartosci_pustych, echo=TRUE }
+##usuwanie wartości pustych.
+nr = nrow(herring)
+for(i in 1:ncol(herring)){
+  if(is.na(herring[1,i])){
+    herring[1,i] <- median(herring[,i], na.rm = TRUE)
+  }
+  if(is.na(herring[nr,i])){
+    herring[nr,i] <- median(herring[,i], na.rm = TRUE)
+  }
+  herring[,i] <- na.approx(herring[,i])
+}
+
+herringData <- tbl_df(herring)
+```
+
+#Rozkład danych
+
+Poniższe histogramy prezentują rozkłady wartości atrybutów w zbiorze. Tylko atrybut length charakteryzuje się rozkładem zbliżonym do rozkładu normalnego. Pozostałe atrybuty posiadają bardzo nieregularne rozkłady wartości.
+Został pominięty rozkład dla atrybutów X, ponieważ jest on identyfikatorem oraz xmonth. Warto zwrócić uwagę że dla atrybutu cfin1 wartości powtarzalność sięga prawie maksymalnej wartośći podziału nawet przy dużym binie.
+
+```{r rozkład_danych, echo=FALSE}
+ui <- pageWithSidebar(
+  headerPanel(''),
+  sidebarPanel(
+    sliderInput("max","Liczba binów:", min = 1,  max = 40,  value = 10)),
+  div(class="col-sm-12",mainPanel(
+    plotOutput('HistogramPlot', width = "1000px", height = "1000px")
+  ))
+)
+
+# Define server logic required to draw a histogram
+server <- function(input, output, session) {
+  # Combine the selected variables into a new data frame
+  selectedBins <- reactive({
+    input$max
+  })
+
+  d <- melt(herringRare[,-c(1,15)])
+
+output$HistogramPlot <- renderPlot({
+  ggplot(d,aes(x = value)) + 
+facet_wrap(~variable,scales = "free_x") + 
+geom_histogram(bins = selectedBins(), fill = "#039be5") + theme_classic()
+  })
+
+}
+
+# Run the application 
+tags$div(id='plot1', shinyApp(ui = ui, server = server))
+
+```
+
+#Zmiana długośći śledzia w czasie
 
 ```{r przedstawienie_danych, echo=FALSE}
 # Define UI for application that draws a histogram
 ui <- pageWithSidebar(
-  headerPanel('Zmiana długośći śledzia'),
+  headerPanel(''),
   sidebarPanel(
     selectInput('month', 'Miesiąc', c("Wszystkie" = "all", "styczen"="1", "luty" = "2", "marzec" = "3", "kwiecien" = "4", "maj" = "5", "czerwiec" = "6", "lipiec" = "7", "sierpien" = "8", "wrzesien" = "9", "październik" = "10", "listopad" = "11", "grudzien" = "12"))
   ),
@@ -76,9 +160,7 @@ ui <- pageWithSidebar(
 
 # Define server logic required to draw a histogram
 server <- function(input, output, session) {
-
   # Combine the selected variables into a new data frame
-
   selectedData <- reactive({
     if(input$month == "all"){
       herringData %>%
@@ -90,31 +172,136 @@ server <- function(input, output, session) {
     }
   })
 
-
-  output$plot1 <- renderPlot({
-   ggplot(selectedData(), aes(x = X, y=length)) + geom_point(alpha = 0.3) + geom_smooth(method="auto", se=TRUE, color="red")
-
-      })
+output$plot1 <- renderPlot({ggplot(selectedData(), aes(x = X, y=length)) + geom_point(alpha = 0.2, color="#00897b") + geom_smooth(method="auto", se=TRUE, color="#ef5350") + theme_classic()})
 
 }
 
 # Run the application 
-shinyApp(ui = ui, server = server)
+tags$div(id='plot2', shinyApp(ui = ui, server = server))
 
 ```
 
-
-## Relacje między zmiennymi
-
+# Korelacja atrybutów
+Korelacja pomiędzy atrybutami została sprawdzona, przy użyciu funkcji cor() z wykorzystaniem współczynnika korelacji Pearsona. Wykres przedstawia zależności pomiędzy atrybutami.
 ```{r korelacja}
 
-cor <- tbl_df(cor(herring)) %>%
-  mutate(name = colnames(herring), abs_length = abs(length)) %>%
-  select(name, abs_length, length) %>%
-  filter( name != 'length', name != 'X') %>%
-  arrange(desc(abs_length))
-
+cor <- round(cor(select(herring, -c(X, xmonth))), digits = 2)
 knitr::kable(cor)
+
+corrplot.mixed(cor, lower="number", upper="square", order ="hclust")
 
 ```
 
+Najsilniesze powiazanie można zauważyć pomiędzy:
+
+* chel1 i lcop1
+* chel2 i lcop2
+* cumf i totaln
+
+
+#Model predykcyjny
+
+Przed rozpoczęciem trenowania modelu, zostały usunięte atrybuty o silnej korelacji. Usunięte atrybuty to: chel1, chel2, cumf oraz X (kolumna identyfikatora). Podanto został usuniety atrybut "recr", ponieważ miał zerową korelacje "length". Zbiór został podzielony na treningowy i testujący w stosunku odpowiednio 80:20. Aby zachować rozkład wartości atrybutu length, zostało użyte losowanie warstwowe. Najlepiej ocenianym modelem predykcyjnym okazał się "random forest".
+```{r predykcja_modelu, cache=TRUE, warning=FALSE}
+
+herringToR <- tbl_df(herring) %>%
+  select(-c(X, xmonth, chel1, chel2, cumf, recr, cfin1))
+
+herringRaw <- tbl_df(herringOrigin) %>%
+  select(-c(X, xmonth, chel1, chel2, cumf, recr, cfin1))
+
+set.seed(15)
+inTraining <- 
+  createDataPartition(
+    y = herringToR$length,
+    p = .80,
+    list = FALSE)
+
+train <- herringToR[inTraining, ]
+test <- herringToR[-inTraining, ]
+
+ctrl <- trainControl(
+  method = "repeatedcv",
+  number = 6,
+  repeats = 10)
+
+fit <- train(length ~ .,
+             data = train,
+             method = "rf",
+             trControl = ctrl,
+             ntree = 20,
+             importance = TRUE)
+
+test <- na.omit(test)
+predicted <- predict(fit, test)
+actual <- test[, "length"]
+
+finalModaelRanking <- varImp(fit)
+testR <- tbl_df(postResample(as.matrix(test[,1]),predicted))
+
+knitr::kable(data.frame(model = c("treningowy","testowy"), RSME = c(fit$results$RMSE[3],testR$value[1]), Rsuqred = c(fit$results$Rsquared[3],testR$value[2])))
+
+```
+
+Jak widać róznica pomiędzy RSME dla zbioru testowego i treningowego jest mała, czyli nie zachodzi tutaj zjawisko przeuczenia modelu.
+
+#Istotność atrybutów
+##Ranking
+Ranking ważności atrybutów dla zbudowanego modelu regresji wygląda następująco:
+
+```{r istotność_atrybuty}
+
+knitr::kable(data.frame(finalModaelRanking$importance))
+
+```
+
+
+
+##Zależność pomiędzy atrybutami
+Z rankingu wynika, że najważniejszym atrybutem jest **sst**. Oznacza to że głownym czynnikiem wpływającym na długość śledzia jest temperatura przy powierzchni wody. Na poniższym wykresie można zauwazyć zależność pomiędzy wybranym atrybutem, a długością sledzia. Dane zostały ustandaryzowane w celu lepszej wizualizacji. 
+
+```{r istotność_atrybutów, echo=FALSE}
+colnames <- colnames(herring)
+herringS <- tbl_df(scale(herring))
+# Define UI for application that draws a histogram
+ui <- pageWithSidebar(
+  headerPanel(''),
+  sidebarPanel(
+    selectInput('attr', 'Atrybut', colnames[! colnames %in% c("X", "xmonth", "length")])
+  ),
+  mainPanel(
+    plotOutput('plot3')
+  )
+)
+
+# Define server logic required to draw a histogram
+server <- function(input, output, session) {
+  # Combine the selected variables into a new data frame
+  selectedData <- reactive({ 
+    herringS[, input$attr]
+    })
+  
+  selectedLabel <- reactive({
+    input$attr
+  })
+
+output$plot3 <- renderPlot({
+ggplot(herringS,aes(X,sst)) + geom_smooth(aes(X,selectedData()), color="#ff5722") + geom_smooth(mapping=aes(X,length), color="#00bcd4") + labs( y="znormalizowana wartość",x="czas",title=paste("Korelacja length i",selectedLabel())) + theme_classic()
+  })
+}
+
+# Run the application 
+tags$div(id='plot3', shinyApp(ui = ui, server = server))
+
+```
+
+# Podsumowanie
+
+Celem analizy danych było określenie przyczyn zmniejszania się długości śledzi oceanicznych wyławianych w Europie. Wejściowy zbiór danych okazał się dość trudny w przetwarzaniu. Dla wielu różnych długości śledzia, wszystkie pozostałe atrybuty posiadały te same wartości, co powodowało duże odchylenia wartości przewidywanej.Po analizie histogramów i korelacji do budowy modelu regresora zostały użyte następujące kolumny: cfin2, lcop1, lcop2, fbar, totaln, sst, sal oraz nao. Do regresji została wykorzystana metoda "random forest". Daje ona poprawne wyniki.Dla tak zbudowanego modelu regresji, najważniejszym atrybutem do przewidywania długości śledzia jest **sst**.
+
+<script tyle="text/javascrpt">
+
+$('#plot1 iframe').attr({"height":"1250"});
+$('#plot2 iframe').attr({"height":"500"});
+
+</script>
